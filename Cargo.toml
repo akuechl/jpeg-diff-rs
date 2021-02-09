@@ -1,19 +1,24 @@
 [package]
 name = "jpeg_diff_rs"
-version = "0.2.0"
+version = "0.3.0"
 authors = [""]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+benchmarking = []
+parallel = []
+
+default = []
+
 [dependencies]
 clap = "2.33.3"
 image = "0.23.13"
-
+rayon = "1.5.0"
 
 [profile.release]
 opt-level = 3
-# opt-level = 'z'
 lto = true
 debug = false
 codegen-units = 1   # Reduce number of codegen units to increase optimizations.

@@ -2,23 +2,61 @@
 
 use image::io::Reader as ImageReader;
 use image::{DynamicImage, RgbImage};
-use std::io::Error;
-//use std::time::{SystemTime};
+use std::io::{Error, ErrorKind};
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+#[cfg(feature = "benchmarking")]
+use std::time::SystemTime;
+
+struct Tripple<'a> {
+    count: usize,
+    data: &'a [u8],
+    len: usize
+}
+
+ impl<'a> Tripple<'a> {
+     fn new(d: &'a [u8]) -> Tripple<'a> {
+        Tripple { count: 0, data: d, len: d.len() }
+     }
+ }
+
+impl<'a> Iterator for Tripple<'a> {
+    type Item = &'a [u8];
+    fn next(&mut self) -> Option<Self::Item> {
+        let start = self.count;
+        self.count += 3;
+        if self.count < self.len {
+            Some(&self.data[start..self.count])
+        } else {
+            None
+        }
+    }
+}
 
 pub fn run(files: Vec<&str>) -> Result<f32, Error> {
     let reference = files[0];
     let to_compare = &files[1..];
-//   let now = SystemTime::now();
+
+    #[cfg(feature = "benchmarking")]
+    let now = SystemTime::now();
 
     let image_reference = load_rgb8(reference)?;
-    let mut max = 0f32;
-    for file in to_compare {
-        let image2 = load_rgb8(file)?;
-        let diff = calculate_diff(&image_reference, &image2)?;
-        let calculated_diff = diff.0 as f32 / diff.1 as f32;
-        max = if max > calculated_diff { max } else { calculated_diff };
-    }
-/*
+    let image_size = (image_reference.width() * image_reference.height()) as f32;
+
+    #[cfg(feature = "parallel")]
+    let iter = to_compare.par_iter();
+    
+    #[cfg(not(feature = "parallel"))]
+    let iter = to_compare.iter();
+
+    let max = iter.map(
+        |file| {
+            let image2 = load_rgb8(file).unwrap();
+            calculate_diff(&image_reference, &image2).unwrap()
+        }
+    ).max();
+
+    #[cfg(feature = "benchmarking")]
     match now.elapsed() {
         Ok(elapsed) => {
             println!("{:?}", elapsed);
@@ -27,12 +65,15 @@ pub fn run(files: Vec<&str>) -> Result<f32, Error> {
             println!("Error: {:?}", e);
         }
     }
-*/
-    Ok(max)
+
+   match max {
+       Some(m) => Ok(m as f32 / image_size),
+       _ => Err(Error::new(ErrorKind::Other, "No calculation possible"))
+   }
 }
 
-
-fn calculate_diff(image1: &RgbImage, image2: &RgbImage) -> Result<(u32, u32), Error>
+#[inline(always)]
+fn calculate_diff(image1: &RgbImage, image2: &RgbImage) -> Result<i32, Error>
 {
     if image1.width() != image2.width() {
         panic!("Different widths")
@@ -41,24 +82,15 @@ fn calculate_diff(image1: &RgbImage, image2: &RgbImage) -> Result<(u32, u32), Er
         panic!("Different heights")
     }
 
-    let mut diff = 0u32;
-    
     // using raw container is fast as get_pixel - I need speed
-    let container1 = image1.as_raw();
-    let container2 = image2.as_raw();
-    let mut i = 0;
-    while i < container1.len() {
-        let i3 = i + 3;
-        let rgb1 = &container1[i..i3];
-        let lum1 = get_luminance_value(rgb1);
-        let rgb2 = &container2[i..i3];
-        let lum2 = get_luminance_value(rgb2);
-        diff += (lum1 - lum2).abs() as u32;
-        i = i3;
-    }
-
-    let result = (diff, image1.width() * image1.height());
-    Ok(result)
+    let diff = Tripple::new(image1.as_raw()).zip(Tripple::new(image2.as_raw())).map(
+        |(rgb1, rgb2)| {
+            let lum1 = get_luminance_value(rgb1);
+            let lum2 = get_luminance_value(rgb2);
+            (lum1 - lum2).abs()
+        }
+    ).sum();
+    Ok(diff)
 }
 
 #[inline(always)]
