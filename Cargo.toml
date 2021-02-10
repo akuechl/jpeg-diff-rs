@@ -1,6 +1,6 @@
 [package]
 name = "jpeg_diff_rs"
-version = "0.3.0"
+version = "0.4.0"
 authors = [""]
 edition = "2018"
 
@@ -9,13 +9,15 @@ edition = "2018"
 [features]
 benchmarking = []
 parallel = []
-
-default = []
+simd512 = []
+bitDiv = []
 
 [dependencies]
 clap = "2.33.3"
 image = "0.23.13"
 rayon = "1.5.0"
+packed_simd = { version = "0.3.4", package = "packed_simd_2" }
+
 
 [profile.release]
 opt-level = 3
