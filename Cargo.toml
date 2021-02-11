@@ -10,6 +10,7 @@ edition = "2018"
 benchmarking = []
 parallel = []
 simd512 = []
+simd128 = []
 bitDiv = []
 
 [dependencies]

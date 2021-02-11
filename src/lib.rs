@@ -7,7 +7,7 @@ use std::io::{Error, ErrorKind};
 use rayon::prelude::*;
 #[cfg(feature = "benchmarking")]
 use std::time::SystemTime;
-#[cfg(feature = "simd512")]
+#[cfg(any(feature = "simd512", feature = "simd128"))]
 use packed_simd::*;
 
 #[cfg(not(feature = "bitDiv"))]
@@ -24,6 +24,12 @@ static BLUE : i32 = (0.0722 * DIV as f32) as i32;
 #[cfg(feature = "simd512")]
 static MULT_LUMINANZ: i32x16 = i32x16::new(RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, 0);
 
+#[cfg(feature = "simd128")]
+static MULT_LUMINANZ: i32x4 = i32x4::new(RED, GREEN, BLUE, 0);
+
+#[cfg(feature = "simd512")]
+static I32_ZERO: i32x8 = i32x8::splat(0);
+
 struct Tripple<'a> {
     count: usize,
     data: &'a [u8],
@@ -36,17 +42,32 @@ impl<'a> Tripple<'a> {
      }
 }
 
-#[cfg(feature = "simd512")]
+#[cfg(any(feature = "simd512", feature = "simd128"))]
 impl<'a> Iterator for Tripple<'a> {
+    #[cfg(feature = "simd512")]
     type Item = i32x16;
+    #[cfg(feature = "simd128")]
+    type Item = i32x4;
     fn next(&mut self) -> Option<Self::Item> {
+        #[cfg(feature = "simd512")]
+        let diff = 16;
+        #[cfg(feature = "simd128")]
+        let diff = 4;
         let start = self.count;
-        let end = start + 16;
-        self.count += 15;
-        if end < self.len {
-            Some(u8x16::from_slice_unaligned(&self.data[start..end]).into())
+        let end = start + diff;
+        self.count += diff - 1; // coincidence (-1)
+        if end <= self.len {
+            let slice = &self.data[start..end];
+            #[cfg(feature = "simd512")]
+            let result = u8x16::from_slice_unaligned(slice);
+            #[cfg(feature = "simd128")]
+            let result = u8x4::from_slice_unaligned(slice);
+            Some(result.into())
         } else if start < self.len {
+            #[cfg(feature = "simd512")]
             let mut v: i32x16 = i32x16::splat(0);
+            #[cfg(feature = "simd128")]
+            let mut v: i32x4 = i32x4::splat(0);
             for i in 0..(self.len-start) {
                 v = v.replace(i, self.data[start + i] as i32);
             }
@@ -57,7 +78,7 @@ impl<'a> Iterator for Tripple<'a> {
     }
 }
 
-#[cfg(not(feature = "simd512"))]
+#[cfg(not(any(feature = "simd512", feature = "simd128")))]
 impl<'a> Iterator for Tripple<'a> {
     type Item = &'a [u8];
     fn next(&mut self) -> Option<Self::Item> {
@@ -123,52 +144,58 @@ fn calculate_diff(image1: &RgbImage, image2: &RgbImage) -> Result<i32, Error>
     // using raw container is fast as get_pixel - I need speed
     let diff : i32 = Tripple::new(image1.as_raw()).zip(Tripple::new(image2.as_raw())).map(
         |(rgb1, rgb2)| {
+            #[cfg(feature = "simd128")] {
+                let mult1 = MULT_LUMINANZ * rgb1;
+                let add1 = mult1.wrapping_sum();
+                let mult2 = MULT_LUMINANZ * rgb2;
+                let add2 = mult2.wrapping_sum();
+                let result = (add1 - add2).abs();
+                divide_to_original(result)
+            }
             #[cfg(feature = "simd512")] {
                 let mult1 = MULT_LUMINANZ * rgb1;
                 let add1 = add(mult1);
                 let mult2 = MULT_LUMINANZ * rgb2;
                 let add2 = add(mult2);
                 let difference = add1 - add2;
-                let abs_mask = difference.lt(i32x8::splat(0));
+                let abs_mask = difference.lt(I32_ZERO);
                 let abs = abs_mask.select(-difference, difference);
                 let result = abs.wrapping_sum();
-                #[cfg(not(feature = "bitDiv"))] {
-                    result / DIV
-                }
-                #[cfg(feature = "bitDiv")] {
-                    result >> BIT_DIV
-                }
+                divide_to_original(result)
             }
-            #[cfg(not(feature = "simd512"))] {
+            #[cfg(not(any(feature = "simd512", feature = "simd128")))] {
                 let lum1 = get_luminance_value(rgb1);
                 let lum2 = get_luminance_value(rgb2);
                 let result = (lum1 - lum2).abs();
-                #[cfg(not(feature = "bitDiv"))] {
-                    result / DIV
-                }
-                #[cfg(feature = "bitDiv")] {
-                    result >> BIT_DIV
-                }
+                divide_to_original(result)
             }
-
         }
     ).sum();
     Ok(diff)
 }
 
-#[cfg(feature = "simd512")]
 #[inline(always)]
-fn add(mult1 : i32x16) -> i32x8{
-    i32x8::new(
-        mult1.extract(0) + mult1.extract(1) + mult1.extract(2),
-        mult1.extract(3) + mult1.extract(4) + mult1.extract(5),
-        mult1.extract(6) + mult1.extract(7) + mult1.extract(8),
-        mult1.extract(9) + mult1.extract(10) + mult1.extract(11),
-        mult1.extract(12) + mult1.extract(13) + mult1.extract(14),
-    0, 0, 0)    
+fn divide_to_original(value:i32) -> i32 {
+    #[cfg(not(feature = "bitDiv"))] {
+        value / DIV
+    }
+    #[cfg(feature = "bitDiv")] {
+        value >> BIT_DIV
+    }
 }
 
-#[cfg(not(feature = "simd512"))]
+#[cfg(feature = "simd512")]
+#[inline(always)]
+fn add(vec : i32x16) -> i32x8 {
+    unsafe { // i32x16 have 16 lanes = access 0..=14 is save
+        let x1 = i32x8::new(vec.extract_unchecked(0), vec.extract_unchecked(3), vec.extract_unchecked(6), vec.extract_unchecked(9), vec.extract_unchecked(12), 0, 0, 0);
+        let x2 = i32x8::new(vec.extract_unchecked(1), vec.extract_unchecked(4), vec.extract_unchecked(7), vec.extract_unchecked(10), vec.extract_unchecked(13), 0, 0, 0);
+        let x3 = i32x8::new(vec.extract_unchecked(2), vec.extract_unchecked(5), vec.extract_unchecked(8), vec.extract_unchecked(11), vec.extract_unchecked(14), 0, 0, 0);
+        x1 + x2 + x3
+    }
+}
+
+#[cfg(not(any(feature = "simd512", feature = "simd128")))]
 #[inline(always)]
 fn get_luminance_value(pix: &[u8]) -> i32 {
     // https://de.wikipedia.org/wiki/Luminanz
