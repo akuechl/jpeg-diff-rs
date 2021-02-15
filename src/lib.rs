@@ -11,24 +11,24 @@ use std::time::SystemTime;
 use packed_simd::*;
 
 #[cfg(not(feature = "bitDiv"))]
-static DIV : i32 = 10000;
+const DIV : i32 = 10000;
 #[cfg(feature = "bitDiv")]
-static DIV : i32 = 0b1111111111111;
+const DIV : i32 = 0b1111111111111;
 #[cfg(feature = "bitDiv")]
-static BIT_DIV : i32 = 13;
+const BIT_DIV : i32 = 13;
 
-static RED : i32 = (0.2126 * DIV as f32) as i32;
-static GREEN : i32 = (0.7152 * DIV as f32) as i32;
-static BLUE : i32 = (0.0722 * DIV as f32) as i32;
+const RED : i32 = (0.2126 * DIV as f32) as i32;
+const GREEN : i32 = (0.7152 * DIV as f32) as i32;
+const BLUE : i32 = (0.0722 * DIV as f32) as i32;
 
 #[cfg(feature = "simd512")]
-static MULT_LUMINANZ: i32x16 = i32x16::new(RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, 0);
+const MULT_LUMINANZ: i32x16 = i32x16::new(RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, 0);
 
 #[cfg(feature = "simd128")]
-static MULT_LUMINANZ: i32x4 = i32x4::new(RED, GREEN, BLUE, 0);
+const MULT_LUMINANZ: i32x4 = i32x4::new(RED, GREEN, BLUE, 0);
 
 #[cfg(feature = "simd512")]
-static I32_ZERO: i32x8 = i32x8::splat(0);
+const I32_ZERO: i32x8 = i32x8::splat(0);
 
 struct Tripple<'a> {
     count: usize,
@@ -43,40 +43,36 @@ impl<'a> Tripple<'a> {
 }
 
 #[cfg(any(feature = "simd512", feature = "simd128"))]
-impl<'a> Iterator for Tripple<'a> {
-    #[cfg(feature = "simd512")]
-    type Item = i32x16;
-    #[cfg(feature = "simd128")]
-    type Item = i32x4;
-    fn next(&mut self) -> Option<Self::Item> {
-        #[cfg(feature = "simd512")]
-        let diff = 16;
-        #[cfg(feature = "simd128")]
-        let diff = 4;
-        let start = self.count;
-        let end = start + diff;
-        self.count += diff - 1; // coincidence (-1)
-        if end <= self.len {
-            let slice = &self.data[start..end];
-            #[cfg(feature = "simd512")]
-            let result = u8x16::from_slice_unaligned(slice);
-            #[cfg(feature = "simd128")]
-            let result = u8x4::from_slice_unaligned(slice);
-            Some(result.into())
-        } else if start < self.len {
-            #[cfg(feature = "simd512")]
-            let mut v: i32x16 = i32x16::splat(0);
-            #[cfg(feature = "simd128")]
-            let mut v: i32x4 = i32x4::splat(0);
-            for i in 0..(self.len-start) {
-                v = v.replace(i, self.data[start + i] as i32);
+macro_rules! TrippleIterator {
+    ( $element_type:ty, $vector_type:ty, $extract_type:ty, $step:expr, $size:expr ) => {
+        impl<'a> Iterator for Tripple<'a> {
+            type Item = $vector_type;
+            fn next(&mut self) -> Option<Self::Item> {
+                let start = self.count;
+                let end = start + $step;
+                self.count += $size;
+                if end <= self.len {
+                    let slice = &self.data[start..end];
+                    let result = <$extract_type>::from_slice_unaligned(slice);
+                    Some(result.into())
+                } else if start < self.len {
+                    let mut v: $vector_type = <$vector_type>::splat(0);
+                    for i in 0..(self.len - start) {
+                        v = v.replace(i, self.data[start + i] as $element_type);
+                    }
+                    Some(v)
+                } else {
+                    None
+                }
             }
-            Some(v)
-        } else {
-            None
         }
-    }
+    };
 }
+
+#[cfg(feature = "simd128")]
+TrippleIterator!{i32, i32x4, u8x4, 4, 3 * 1}
+#[cfg(feature = "simd512")]
+TrippleIterator!{i32, i32x16, u8x16, 16, 3 * 5}
 
 #[cfg(not(any(feature = "simd512", feature = "simd128")))]
 impl<'a> Iterator for Tripple<'a> {
