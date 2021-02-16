@@ -10,16 +10,33 @@ use std::time::SystemTime;
 #[cfg(any(feature = "simd512", feature = "simd128"))]
 use packed_simd::*;
 
+macro_rules! OriginalToBig {
+    ( $value:expr ) => {
+        ($value as f32 * DIV as f32) as i32
+    };
+}
+
 #[cfg(not(feature = "bitDiv"))]
-const DIV : i32 = 10000;
+macro_rules! BigToOriginal {
+    ( $value:expr ) => {
+        $value / DIV
+    };
+}
+
 #[cfg(feature = "bitDiv")]
+macro_rules! BigToOriginal {
+    ( $value:expr ) => {
+        $value >> BIT_DIV
+    };
+}
+
 const DIV : i32 = 0b1111111111111;
 #[cfg(feature = "bitDiv")]
-const BIT_DIV : i32 = 13;
+const BIT_DIV : u32 = DIV.count_ones();
 
-const RED : i32 = (0.2126 * DIV as f32) as i32;
-const GREEN : i32 = (0.7152 * DIV as f32) as i32;
-const BLUE : i32 = (0.0722 * DIV as f32) as i32;
+const RED : i32 = OriginalToBig!(0.2126);
+const GREEN : i32 = OriginalToBig!(0.7152);
+const BLUE : i32 = OriginalToBig!(0.0722);
 
 #[cfg(feature = "simd512")]
 const MULT_LUMINANZ: i32x16 = i32x16::new(RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, RED, GREEN, BLUE, 0);
@@ -146,7 +163,7 @@ fn calculate_diff(image1: &RgbImage, image2: &RgbImage) -> Result<i32, Error>
                 let mult2 = MULT_LUMINANZ * rgb2;
                 let add2 = mult2.wrapping_sum();
                 let result = (add1 - add2).abs();
-                divide_to_original(result)
+                BigToOriginal!(result)
             }
             #[cfg(feature = "simd512")] {
                 let mult1 = MULT_LUMINANZ * rgb1;
@@ -157,27 +174,17 @@ fn calculate_diff(image1: &RgbImage, image2: &RgbImage) -> Result<i32, Error>
                 let abs_mask = difference.lt(I32_ZERO);
                 let abs = abs_mask.select(-difference, difference);
                 let result = abs.wrapping_sum();
-                divide_to_original(result)
+                BigToOriginal!(result)
             }
             #[cfg(not(any(feature = "simd512", feature = "simd128")))] {
                 let lum1 = get_luminance_value(rgb1);
                 let lum2 = get_luminance_value(rgb2);
                 let result = (lum1 - lum2).abs();
-                divide_to_original(result)
+                BigToOriginal!(result)
             }
         }
     ).sum();
     Ok(diff)
-}
-
-#[inline(always)]
-fn divide_to_original(value:i32) -> i32 {
-    #[cfg(not(feature = "bitDiv"))] {
-        value / DIV
-    }
-    #[cfg(feature = "bitDiv")] {
-        value >> BIT_DIV
-    }
 }
 
 #[cfg(feature = "simd512")]
